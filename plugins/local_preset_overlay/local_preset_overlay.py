@@ -111,6 +111,8 @@ def build_override(key, value, base_value, kind):
         return [str(x) for x in value]
     value = str(value)
     if base_value is not None and ";" in str(base_value):
+        if ";" in value:  # already a full vector, e.g. from the parameter picker
+            return split_vec(value)
         return [value] * len(split_vec(base_value))
     return value
 
@@ -288,12 +290,20 @@ Ops: eq ne contains in glob gt lt ge le. Keys: printer config key, <code>printer
 <h4>IP printers (JSON list)</h4>
 <p><code>{"name","host","host_type":"octoprint","base":"existing system printer name","api_key":""}</code></p>
 <textarea id="ips" style="width:100%;height:90px;font-family:monospace"></textarea>
+<p>Pick parameters from the native editor list:
+<select id="kind"><option>process</option><option>filament</option><option>printer</option></select>
+<button onclick="window.orca.postMessage({cmd:'pick',kind:kind.value})">Pick parameters...</button>
+(adds a draft rule; set its <code>match</code> and <code>apply_to</code>)</p>
 <p><button onclick="send('save')">Save</button> <button onclick="send('preview')">Preview</button>
 <button onclick="send('apply')">Apply</button></p><pre id="out"></pre>
 <script>
 function send(cmd){try{window.orca.postMessage({cmd:cmd,rules:JSON.parse(rules.value||'[]'),ips:JSON.parse(ips.value||'[]')});}
 catch(e){out.textContent='Invalid JSON: '+e}}
 window.orca.onMessage(function(m){
+ if(m.picked){var l=JSON.parse(rules.value||'[]');l.push({id:'rule-'+(l.length+1),name:'New rule',enabled:true,priority:0,
+  target:m.kind==='filament'?'filament':'process',apply_to:['*'],match:[{key:'nozzle_diameter',op:'eq',value:'0.4'}],set:m.picked});
+  rules.value=JSON.stringify(l,null,2);}
+ if(m.error){out.textContent='ERROR: '+m.error;}
  if(m.config){rules.value=JSON.stringify(m.config.rules,null,2);ips.value=JSON.stringify(m.config.ip_printers,null,2);}
  if(m.result){var r=m.result;out.textContent=(r.ok===false?'ERROR: '+r.error+'\n':'')+(r.written!==undefined?'Written: '+r.written+'\n':'')
   +'Presets:\n'+(r.items||[]).map(function(i){return ' - ['+i.kind+'] '+i.name+'  <= '+i.rules.join(', ')}).join('\n')
@@ -331,6 +341,15 @@ if orca is not None:
                 try:
                     if cmd == "load":
                         win.post({"config": load_config()})
+                        return
+                    if cmd == "pick":
+                        pick = getattr(orca.host.preset, "pick_parameters", None)
+                        if pick is None:
+                            win.post({"error": "This Orca build has no parameter picker (needs the fork patch)."})
+                            return
+                        picked = pick(data.get("kind", "process"), "", "Choose parameters to override")
+                        if picked:
+                            win.post({"picked": picked, "kind": data.get("kind", "process")})
                         return
                     save_config({"rules": data.get("rules", []), "ip_printers": data.get("ips", [])})
                     if cmd == "preview":

@@ -78,3 +78,10 @@ def test_write_bundle_removes_stale():
 def test_safe_filename():
     assert "/" not in lp.safe_filename("a/b:c")
     assert len(lp.safe_filename("x" * 300)) <= 120
+
+
+def test_picker_vector_value():
+    p = {"name": "Fil", "is_system": True, "values": {"nozzle_temperature": "200;200"}}
+    d = lp.plan({"rules": [rule(target="filament", apply_to=["Fil"], set={"nozzle_temperature": "210;215"})]},
+                {**PRESETS, "filament": [p]})["items"][0]["data"]
+    assert d["nozzle_temperature"] == ["210", "215"]

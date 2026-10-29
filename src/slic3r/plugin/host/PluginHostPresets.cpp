@@ -15,6 +15,8 @@
 #include <slic3r/GUI/GUI.hpp>
 #include <slic3r/GUI/GUI_App.hpp>
 #include <slic3r/GUI/MainFrame.hpp>
+#include <slic3r/GUI/ParameterPickerDialog.hpp>
+#include <libslic3r/PrintConfig.hpp>
 #include <slic3r/GUI/Plater.hpp>
 #include <slic3r/GUI/PresetComboBoxes.hpp> // TabPresetComboBox::set_filament_idx
 #include <slic3r/GUI/Tab.hpp>
@@ -637,6 +639,108 @@ std::vector<std::string> list_bundle_ids()
     return ids;
 }
 
+
+Preset::Type preset_type_from_kind(const std::string& kind)
+{
+    if (kind == "process")  return Preset::TYPE_PRINT;
+    if (kind == "filament") return Preset::TYPE_FILAMENT;
+    if (kind == "printer")  return Preset::TYPE_PRINTER;
+    throw py::value_error("kind must be \"process\", \"filament\" or \"printer\"");
+}
+
+const std::vector<std::string>& option_keys_for(Preset::Type type)
+{
+    switch (type) {
+    case Preset::TYPE_PRINT:    return Preset::print_options();
+    case Preset::TYPE_FILAMENT: return Preset::filament_options();
+    default:                    return Preset::printer_options();
+    }
+}
+
+// Same label the preset editor shows for the option.
+GUI::ParameterPickerRow picker_row(const std::string& key, const Preset* preset)
+{
+    GUI::ParameterPickerRow row;
+    row.key = key;
+    if (const ConfigOptionDef* def = print_config_def.get(key)) {
+        row.label    = !def->full_label.empty() ? def->full_label : (!def->label.empty() ? def->label : key);
+        row.category = def->category;
+        row.tooltip  = def->tooltip;
+    } else {
+        row.label = key;
+    }
+    if (preset != nullptr && preset->config.has(key))
+        row.value = preset->config.opt_serialize(key);
+    return row;
+}
+
+py::list param_schema(const std::string& kind)
+{
+    const Preset::Type type = preset_type_from_kind(kind);
+    py::list           out;
+    for (const std::string& key : option_keys_for(type)) {
+        const ConfigOptionDef* def = print_config_def.get(key);
+        if (def == nullptr || (def->label.empty() && def->full_label.empty()))
+            continue;
+        py::dict item;
+        const GUI::ParameterPickerRow row = picker_row(key, nullptr);
+        item["key"]      = key;
+        item["label"]    = row.label;
+        item["category"] = def->category;
+        item["tooltip"]  = def->tooltip;
+        item["sidetext"] = def->sidetext;
+        item["vector"]   = !def->is_scalar();
+        item["enum_values"] = def->enum_values;
+        item["enum_labels"] = def->enum_labels;
+        out.append(std::move(item));
+    }
+    return out;
+}
+
+// Opens a native modal list of the preset's parameters and returns {key: value} for the ticked
+// ones. preset_name picks the preset that supplies the starting values (default: the selected one).
+py::object pick_parameters(const std::string& kind, const std::string& preset_name, const std::string& title)
+{
+    const Preset::Type type = preset_type_from_kind(kind);
+    bool                accepted = false;
+    std::vector<GUI::ParameterPickerRow> picked;
+    std::string                          error;
+
+    PluginHostUi::run_on_ui_thread([&]() {
+        PresetBundle* bundle = GUI::wxGetApp().preset_bundle;
+        if (bundle == nullptr) {
+            error = "Preset bundle is not available";
+            return;
+        }
+        PresetCollection& collection = collection_for(*bundle, type);
+        const Preset*     preset     = preset_name.empty() ? &collection.get_selected_preset() : collection.find_preset(preset_name);
+        if (preset == nullptr) {
+            error = "Preset not found: " + preset_name;
+            return;
+        }
+        std::vector<GUI::ParameterPickerRow> rows;
+        for (const std::string& key : option_keys_for(type)) {
+            const ConfigOptionDef* def = print_config_def.get(key);
+            if (def == nullptr || (def->label.empty() && def->full_label.empty()))
+                continue;
+            rows.push_back(picker_row(key, preset));
+        }
+        GUI::ParameterPickerDialog dlg(GUI::wxGetApp().mainframe, wxString::FromUTF8(title.empty() ? "Choose parameters" : title),
+                                       std::move(rows));
+        accepted = dlg.ShowModal() == wxID_OK;
+        if (accepted)
+            picked = dlg.selected_rows();
+    });
+
+    if (!error.empty())
+        throw std::runtime_error(error);
+    if (!accepted)
+        return py::none();
+    py::dict out;
+    for (const GUI::ParameterPickerRow& row : picked)
+        out[py::str(row.key)] = row.value;
+    return std::move(out);
+}
 } // namespace
 
 void host_bindings::register_presets(py::module_& host)
@@ -648,6 +752,15 @@ void host_bindings::register_presets(py::module_& host)
     bundles.def("list_ids", &list_bundle_ids,
                 "IDs of local preset bundles in the active user's _local directory that reload_local() accepts, "
                 "including bundles added after startup.");
+
+    preset.def("param_schema", &param_schema, py::arg("kind"),
+               "Parameter definitions for \"process\", \"filament\" or \"printer\" presets: a list of dicts with "
+               "key, label, category, tooltip, sidetext, vector, enum_values and enum_labels.");
+    preset.def("pick_parameters", &pick_parameters, py::arg("kind"), py::arg("preset_name") = "", py::arg("title") = "",
+               "Open a native modal parameter picker for \"process\", \"filament\" or \"printer\" presets. "
+               "The user ticks parameters and edits their values; returns {key: value_string} (vectors are "
+               "';'-separated), or None if cancelled. preset_name supplies the starting values (default: the "
+               "selected preset). Call it from a Script capability, not from a slicing pipeline hook.");
 
     py::enum_<Preset::Type>(host, "PresetType")
         .value("Invalid", Preset::TYPE_INVALID)

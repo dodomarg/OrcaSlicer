@@ -567,6 +567,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/TickCode.hpp
     GUI/TroubleshootDialog.cpp
     GUI/TroubleshootDialog.hpp
+    GUI/ParameterPickerDialog.cpp
+    GUI/ParameterPickerDialog.hpp
     GUI/UnsavedChangesDialog.cpp
     GUI/UnsavedChangesDialog.hpp
     GUI/UpdateDialogs.cpp
